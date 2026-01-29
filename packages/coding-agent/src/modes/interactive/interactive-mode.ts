@@ -98,6 +98,7 @@ import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
 import {
+	deriveUserMessageBg,
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
 	getEditorTheme,
@@ -108,6 +109,7 @@ import {
 	setRegisteredThemes,
 	setTheme,
 	setThemeInstance,
+	setThemeOverrides,
 	Theme,
 	type ThemeColor,
 	theme,
@@ -495,6 +497,7 @@ export class InteractiveMode {
 			this.updateEditorBorderColor();
 			this.ui.requestRender();
 		});
+		void this.applyTerminalBackgroundOverride();
 
 		// Set up git branch watcher (uses provider instead of footer)
 		this.footerDataProvider.onBranchChange(() => {
@@ -515,6 +518,20 @@ export class InteractiveMode {
 			this.ui.terminal.setTitle(`π - ${sessionName} - ${cwdBasename}`);
 		} else {
 			this.ui.terminal.setTitle(`π - ${cwdBasename}`);
+		}
+	}
+
+	private async applyTerminalBackgroundOverride(): Promise<void> {
+		try {
+			if (theme.getBgAnsi("userMessageBg") !== "\x1b[49m") {
+				return;
+			}
+			const terminalBg = await this.ui.queryBackgroundColor();
+			if (!terminalBg) return;
+			const derived = deriveUserMessageBg(terminalBg);
+			setThemeOverrides({ userMessageBg: derived });
+		} catch {
+			// Ignore errors and fall back to theme defaults.
 		}
 	}
 
@@ -2069,7 +2086,6 @@ export class InteractiveMode {
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
 							if (!this.pendingTools.has(content.id)) {
-								this.chatContainer.addChild(new Text("", 0, 0));
 								const component = new ToolExecutionComponent(
 									content.name,
 									content.arguments,

@@ -52,6 +52,9 @@ export interface ToolExecutionOptions {
  * Component that renders a tool call with its result (updateable)
  */
 export class ToolExecutionComponent extends Container {
+	private spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+	private spinnerIndex = 0;
+	private spinnerInterval: NodeJS.Timeout | undefined;
 	private contentBox: Box; // Used for custom tools and bash visual truncation
 	private contentText: Text; // For built-in tools (with its own padding/bg)
 	private imageComponents: Image[] = [];
@@ -94,8 +97,8 @@ export class ToolExecutionComponent extends Container {
 		this.addChild(new Spacer(1));
 
 		// Always create both - contentBox for custom tools/bash, contentText for other built-ins
-		this.contentBox = new Box(1, 1, (text: string) => theme.bg("toolPendingBg", text));
-		this.contentText = new Text("", 1, 1, (text: string) => theme.bg("toolPendingBg", text));
+		this.contentBox = new Box(1, 0, (text: string) => theme.bg("toolPendingBg", text));
+		this.contentText = new Text("", 1, 0, (text: string) => theme.bg("toolPendingBg", text));
 
 		// Use contentBox for bash or any non-built-in tool (even without definition)
 		// Use contentText for built-in tools (including overrides without custom renderers)
@@ -227,6 +230,13 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
+		const isPending = this.isPartial || !this.result;
+		if (isPending) {
+			this.startSpinner();
+		} else {
+			this.stopSpinner();
+		}
+
 		// Set background based on state
 		const bgFn = this.isPartial
 			? (text: string) => theme.bg("toolPendingBg", text)
@@ -260,11 +270,11 @@ export class ToolExecutionComponent extends Container {
 					}
 				} catch {
 					// Fall back to default on error
-					this.contentBox.addChild(new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0));
+					this.contentBox.addChild(new Text(this.formatToolTitle(this.toolName), 0, 0));
 				}
 			} else {
 				// No custom renderCall, show tool name
-				this.contentBox.addChild(new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0));
+				this.contentBox.addChild(new Text(this.formatToolTitle(this.toolName), 0, 0));
 			}
 
 			// Render result component if we have a result
@@ -296,7 +306,7 @@ export class ToolExecutionComponent extends Container {
 			// Custom tool without definition: fall back to simple name + output
 			this.contentBox.setBgFn(bgFn);
 			this.contentBox.clear();
-			this.contentBox.addChild(new Text(theme.fg("toolTitle", theme.bold(this.toolName)), 0, 0));
+			this.contentBox.addChild(new Text(this.formatToolTitle(this.toolName), 0, 0));
 			if (this.result) {
 				const output = this.getTextOutput();
 				if (output) {
@@ -357,9 +367,10 @@ export class ToolExecutionComponent extends Container {
 
 		// Header
 		const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
+		const indicator = this.getToolIndicator();
 		this.contentBox.addChild(
 			new Text(
-				theme.fg("toolTitle", theme.bold(`$ ${command || theme.fg("toolOutput", "...")}`)) + timeoutSuffix,
+				`${indicator}${theme.fg("toolTitle", theme.bold(`$ ${command || theme.fg("toolOutput", "...")}`))}${timeoutSuffix}`,
 				0,
 				0,
 			),
@@ -474,7 +485,7 @@ export class ToolExecutionComponent extends Container {
 				pathDisplay += theme.fg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
 			}
 
-			text = `${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}`;
+			text = `${this.formatToolTitle("read")} ${pathDisplay}`;
 
 			if (this.result) {
 				const output = this.getTextOutput();
@@ -533,10 +544,7 @@ export class ToolExecutionComponent extends Container {
 				: [];
 			const totalLines = lines.length;
 
-			text =
-				theme.fg("toolTitle", theme.bold("write")) +
-				" " +
-				(path ? theme.fg("accent", path) : theme.fg("toolOutput", "..."));
+			text = `${this.formatToolTitle("write")} ${path ? theme.fg("accent", path) : theme.fg("toolOutput", "...")}`;
 
 			if (fileContent) {
 				const maxLines = this.expanded ? lines.length : 10;
@@ -577,7 +585,7 @@ export class ToolExecutionComponent extends Container {
 				pathDisplay += theme.fg("warning", `:${firstChangedLine}`);
 			}
 
-			text = `${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`;
+			text = `${this.formatToolTitle("edit")} ${pathDisplay}`;
 
 			if (this.result?.isError) {
 				// Show error from result
@@ -602,7 +610,7 @@ export class ToolExecutionComponent extends Container {
 			const path = shortenPath(this.args?.path || ".");
 			const limit = this.args?.limit;
 
-			text = `${theme.fg("toolTitle", theme.bold("ls"))} ${theme.fg("accent", path)}`;
+			text = `${this.formatToolTitle("ls")} ${theme.fg("accent", path)}`;
 			if (limit !== undefined) {
 				text += theme.fg("toolOutput", ` (limit ${limit})`);
 			}
@@ -640,10 +648,7 @@ export class ToolExecutionComponent extends Container {
 			const limit = this.args?.limit;
 
 			text =
-				theme.fg("toolTitle", theme.bold("find")) +
-				" " +
-				theme.fg("accent", pattern) +
-				theme.fg("toolOutput", ` in ${path}`);
+				this.formatToolTitle("find") + ` ${theme.fg("accent", pattern)}` + theme.fg("toolOutput", ` in ${path}`);
 			if (limit !== undefined) {
 				text += theme.fg("toolOutput", ` (limit ${limit})`);
 			}
@@ -682,9 +687,8 @@ export class ToolExecutionComponent extends Container {
 			const limit = this.args?.limit;
 
 			text =
-				theme.fg("toolTitle", theme.bold("grep")) +
-				" " +
-				theme.fg("accent", `/${pattern}/`) +
+				this.formatToolTitle("grep") +
+				` ${theme.fg("accent", `/${pattern}/`)}` +
 				theme.fg("toolOutput", ` in ${path}`);
 			if (glob) {
 				text += theme.fg("toolOutput", ` (${glob})`);
@@ -726,7 +730,7 @@ export class ToolExecutionComponent extends Container {
 			}
 		} else {
 			// Generic tool (shouldn't reach here for custom tools)
-			text = theme.fg("toolTitle", theme.bold(this.toolName));
+			text = this.formatToolTitle(this.toolName);
 
 			const content = JSON.stringify(this.args, null, 2);
 			text += `\n\n${content}`;
@@ -737,5 +741,34 @@ export class ToolExecutionComponent extends Container {
 		}
 
 		return text;
+	}
+
+	private formatToolTitle(name: string): string {
+		return `${this.getToolIndicator()}${theme.fg("toolTitle", theme.bold(name))}`;
+	}
+
+	private getToolIndicator(): string {
+		if (this.isPartial || !this.result) {
+			const frame = this.spinnerFrames[this.spinnerIndex];
+			return `${theme.fg("muted", frame)} `;
+		}
+		const symbol = "●";
+		return this.result.isError ? `${theme.fg("error", symbol)} ` : `${theme.fg("success", symbol)} `;
+	}
+
+	private startSpinner(): void {
+		if (this.spinnerInterval) return;
+		this.spinnerIndex = 0;
+		this.spinnerInterval = setInterval(() => {
+			this.spinnerIndex = (this.spinnerIndex + 1) % this.spinnerFrames.length;
+			this.updateDisplay();
+			this.ui.requestRender();
+		}, 80);
+	}
+
+	private stopSpinner(): void {
+		if (!this.spinnerInterval) return;
+		clearInterval(this.spinnerInterval);
+		this.spinnerInterval = undefined;
 	}
 }

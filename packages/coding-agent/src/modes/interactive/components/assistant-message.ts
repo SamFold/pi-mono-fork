@@ -47,6 +47,9 @@ export class AssistantMessageComponent extends Container {
 		// Clear content container
 		this.contentContainer.clear();
 
+		let prefixedText = false;
+		let prefixedThinking = false;
+
 		const hasVisibleContent = message.content.some(
 			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
 		);
@@ -61,26 +64,38 @@ export class AssistantMessageComponent extends Container {
 			if (content.type === "text" && content.text.trim()) {
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
-				this.contentContainer.addChild(new Markdown(content.text.trim(), 1, 0, this.markdownTheme));
+				const text = content.text.trim();
+				const prefixedTextValue = prefixedText ? text : `● ${text}`;
+				prefixedText = true;
+				this.contentContainer.addChild(new Markdown(prefixedTextValue, 1, 0, this.markdownTheme));
 			} else if (content.type === "thinking" && content.thinking.trim()) {
-				// Check if there's text content after this thinking block
-				const hasTextAfter = message.content.slice(i + 1).some((c) => c.type === "text" && c.text.trim());
+				// Check if there's visible content after this thinking block
+				const hasVisibleAfter = message.content
+					.slice(i + 1)
+					.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
 
 				if (this.hideThinkingBlock) {
 					// Show static "Thinking..." label when hidden
-					this.contentContainer.addChild(new Text(theme.italic(theme.fg("thinkingText", "Thinking...")), 1, 0));
-					if (hasTextAfter) {
+					const label = prefixedThinking ? "Thinking..." : "● Thinking...";
+					prefixedThinking = true;
+					this.contentContainer.addChild(new Text(theme.italic(theme.fg("thinkingText", label)), 1, 0));
+					if (hasVisibleAfter) {
 						this.contentContainer.addChild(new Spacer(1));
 					}
 				} else {
 					// Thinking traces in thinkingText color, italic
+					const text = content.thinking.trim();
+					const prefixedTextValue = prefixedThinking ? text : `● ${text}`;
+					prefixedThinking = true;
 					this.contentContainer.addChild(
-						new Markdown(content.thinking.trim(), 1, 0, this.markdownTheme, {
+						new Markdown(prefixedTextValue, 1, 0, this.markdownTheme, {
 							color: (text: string) => theme.fg("thinkingText", text),
 							italic: true,
 						}),
 					);
-					this.contentContainer.addChild(new Spacer(1));
+					if (hasVisibleAfter) {
+						this.contentContainer.addChild(new Spacer(1));
+					}
 				}
 			}
 		}
