@@ -208,6 +208,10 @@ export class TUI extends Container {
 	private hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
 	private inputBuffer = ""; // Buffer for parsing terminal responses
 	private cellSizeQueryPending = false;
+	private bgColorQueryPending = false;
+	private bgColorQueryResolve?: (value: [number, number, number] | undefined) => void;
+	private bgColorQueryTimeout?: NodeJS.Timeout;
+	private bgColorQueryPromise?: Promise<[number, number, number] | undefined>;
 	private showHardwareCursor = process.env.PI_HARDWARE_CURSOR === "1";
 	private clearOnShrink = process.env.PI_CLEAR_ON_SHRINK === "1"; // Clear empty rows when content shrinks (default: off)
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
@@ -388,6 +392,28 @@ export class TUI extends Container {
 		this.terminal.write("\x1b[16t");
 	}
 
+	/**
+	 * Query terminal background color via OSC 11.
+	 * Returns undefined if unsupported or timed out.
+	 */
+	queryBackgroundColor(timeoutMs: number = 150): Promise<[number, number, number] | undefined> {
+		if (this.bgColorQueryPromise) {
+			return this.bgColorQueryPromise;
+		}
+
+		this.bgColorQueryPending = true;
+		this.bgColorQueryPromise = new Promise((resolve) => {
+			this.bgColorQueryResolve = resolve;
+			this.bgColorQueryTimeout = setTimeout(() => {
+				this.finishBackgroundColorQuery(undefined);
+			}, timeoutMs);
+			// OSC 11;? BEL - query background color
+			this.terminal.write("\x1b]11;?\x07");
+		});
+
+		return this.bgColorQueryPromise;
+	}
+
 	stop(): void {
 		this.stopped = true;
 		// Move cursor to the end of the content to prevent overwriting/artifacts on exit
@@ -424,6 +450,17 @@ export class TUI extends Container {
 	}
 
 	private handleInput(data: string): void {
+		if (this.bgColorQueryPending) {
+			const extracted = this.extractBackgroundColorResponse(data);
+			if (extracted) {
+				this.finishBackgroundColorQuery(extracted.color);
+				if (extracted.rest.length === 0) {
+					return;
+				}
+				data = extracted.rest;
+			}
+		}
+
 		// If we're waiting for cell size response, buffer input and parse
 		if (this.cellSizeQueryPending) {
 			this.inputBuffer += data;
@@ -506,6 +543,59 @@ export class TUI extends Container {
 		return result;
 	}
 
+	private extractBackgroundColorResponse(data: string): { color: [number, number, number]; rest: string } | undefined {
+		// OSC 11 response: ESC ] 11 ; rgb:RR/GG/BB BEL (or ST)
+		const match = data.match(/\x1b]11;(.+?)(?:\x07|\x1b\\)/);
+		if (!match) return undefined;
+
+		const payload = match[1];
+		if (!payload.startsWith("rgb:")) return undefined;
+
+		const parts = payload.slice(4).split("/");
+		if (parts.length < 3) return undefined;
+
+		const r = this.parseRgbPart(parts[0]!);
+		const g = this.parseRgbPart(parts[1]!);
+		const b = this.parseRgbPart(parts[2]!);
+		if (r === undefined || g === undefined || b === undefined) return undefined;
+
+		const start = match.index ?? 0;
+		const end = start + match[0].length;
+		const rest = `${data.slice(0, start)}${data.slice(end)}`;
+
+		return { color: [r, g, b], rest };
+	}
+
+	private parseRgbPart(part: string): number | undefined {
+		const hex = part.trim();
+		if (hex.length === 2) {
+			return parseInt(hex, 16);
+		}
+		if (hex.length === 4) {
+			const value = parseInt(hex, 16);
+			if (Number.isNaN(value)) return undefined;
+			return Math.round(value / 257);
+		}
+		return undefined;
+	}
+
+	private finishBackgroundColorQuery(color: [number, number, number] | undefined): void {
+		if (this.bgColorQueryTimeout) {
+			clearTimeout(this.bgColorQueryTimeout);
+			this.bgColorQueryTimeout = undefined;
+		}
+		this.bgColorQueryPending = false;
+		const resolve = this.bgColorQueryResolve;
+		this.bgColorQueryResolve = undefined;
+		this.bgColorQueryPromise = undefined;
+		if (resolve) {
+			resolve(color);
+		}
+	}
+
+	private containsImage(line: string): boolean {
+		return line.includes("\x1b_G") || line.includes("\x1b]1337;File=");
+	}
 	/**
 	 * Resolve overlay layout from options.
 	 * Returns { width, row, col, maxHeight } for rendering.

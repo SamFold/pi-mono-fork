@@ -150,6 +150,8 @@ export type ThemeBg =
 	| "toolSuccessBg"
 	| "toolErrorBg";
 
+export type ThemeOverride = Partial<Record<ThemeColor | ThemeBg, string | number>>;
+
 type ColorMode = "truecolor" | "256color";
 
 // ============================================================================
@@ -190,6 +192,37 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 		throw new Error(`Invalid hex color: ${hex}`);
 	}
 	return { r, g, b };
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+	const clamp = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
+	const toHex = (value: number) => clamp(value).toString(16).padStart(2, "0");
+	return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function isLightColor(color: [number, number, number]): boolean {
+	const [r, g, b] = color;
+	const y = 0.299 * r + 0.587 * g + 0.114 * b;
+	return y > 128;
+}
+
+function blendColor(
+	top: [number, number, number],
+	base: [number, number, number],
+	alpha: number,
+): [number, number, number] {
+	const r = top[0] * alpha + base[0] * (1 - alpha);
+	const g = top[1] * alpha + base[1] * (1 - alpha);
+	const b = top[2] * alpha + base[2] * (1 - alpha);
+	return [r, g, b].map((value) => Math.round(value)) as [number, number, number];
+}
+
+export function deriveUserMessageBg(terminalBg: [number, number, number]): string {
+	const light = isLightColor(terminalBg);
+	const top: [number, number, number] = light ? [0, 0, 0] : [255, 255, 255];
+	const alpha = light ? 0.04 : 0.12;
+	const [r, g, b] = blendColor(top, terminalBg, alpha);
+	return rgbToHex(r, g, b);
 }
 
 // The 6x6x6 color cube channel values (indices 0-5)
@@ -569,6 +602,19 @@ function loadThemeJson(name: string): ThemeJson {
 	return parseThemeJsonContent(name, content);
 }
 
+function applyThemeOverrides(themeJson: ThemeJson): ThemeJson {
+	if (Object.keys(themeOverrides).length === 0) {
+		return themeJson;
+	}
+	return {
+		...themeJson,
+		colors: {
+			...themeJson.colors,
+			...themeOverrides,
+		},
+	};
+}
+
 function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string): Theme {
 	const colorMode = mode ?? detectColorMode();
 	const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
@@ -597,7 +643,7 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 
 export function loadThemeFromPath(themePath: string, mode?: ColorMode): Theme {
 	const content = fs.readFileSync(themePath, "utf-8");
-	const themeJson = parseThemeJsonContent(themePath, content);
+	const themeJson = applyThemeOverrides(parseThemeJsonContent(themePath, content));
 	return createTheme(themeJson, mode, themePath);
 }
 
@@ -606,7 +652,7 @@ function loadTheme(name: string, mode?: ColorMode): Theme {
 	if (registeredTheme) {
 		return registeredTheme;
 	}
-	const themeJson = loadThemeJson(name);
+	const themeJson = applyThemeOverrides(loadThemeJson(name));
 	return createTheme(themeJson, mode);
 }
 
@@ -662,12 +708,33 @@ let currentThemeName: string | undefined;
 let themeWatcher: fs.FSWatcher | undefined;
 let onThemeChangeCallback: (() => void) | undefined;
 const registeredThemes = new Map<string, Theme>();
+let themeOverrides: ThemeOverride = {};
 
 export function setRegisteredThemes(themes: Theme[]): void {
 	registeredThemes.clear();
 	for (const theme of themes) {
 		if (theme.name) {
 			registeredThemes.set(theme.name, theme);
+		}
+	}
+}
+
+export function setThemeOverrides(overrides: ThemeOverride): void {
+	themeOverrides = { ...themeOverrides, ...overrides };
+	if (currentThemeName) {
+		setGlobalTheme(loadTheme(currentThemeName));
+		if (onThemeChangeCallback) {
+			onThemeChangeCallback();
+		}
+	}
+}
+
+export function clearThemeOverrides(): void {
+	themeOverrides = {};
+	if (currentThemeName) {
+		setGlobalTheme(loadTheme(currentThemeName));
+		if (onThemeChangeCallback) {
+			onThemeChangeCallback();
 		}
 	}
 }
