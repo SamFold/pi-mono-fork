@@ -543,6 +543,15 @@ export class AgentSession {
 	}
 
 	/**
+	 * Look up a tool definition by name (extensions first, then SDK custom tools).
+	 */
+	getToolDefinition(toolName: string): ToolDefinition | undefined {
+		const extDef = this._extensionRunner?.getToolDefinition(toolName);
+		if (extDef) return extDef;
+		return this._customTools.find((tool) => tool.name === toolName);
+	}
+
+	/**
 	 * Set active tools by name.
 	 * Only tools in the registry can be enabled. Unknown tool names are ignored.
 	 * Also rebuilds the system prompt to reflect the new tool set.
@@ -2649,7 +2658,7 @@ export class AgentSession {
 		let toolRenderer: ToolHtmlRenderer | undefined;
 		if (this._extensionRunner) {
 			toolRenderer = createToolHtmlRenderer({
-				getToolDefinition: (name) => this._extensionRunner!.getToolDefinition(name),
+				getToolDefinition: (name) => this.getToolDefinition(name),
 				theme,
 			});
 		}
